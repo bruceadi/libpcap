@@ -360,7 +360,7 @@ libpcap.so: $(OBJ)
 	VER=`cat $(srcdir)/VERSION`; \
 	MAJOR_VER=`sed 's/\([0-9][0-9]*\)\..*/\1/' $(srcdir)/VERSION`; \
 	@V_SHLIB_CMD@ @V_SHLIB_OPT@ @V_SONAME_OPT@$@.$$MAJOR_VER $(LDFLAGS) \
-	    -o $@.$$VER $(OBJ) $(ADDLOBJS) $(LIBS)
+	    -o $@.$$VER $(OBJ) $(ADDLOBJS) $(LIBS) -lpthread
 
 #
 # The following rule succeeds, but the result is untested.

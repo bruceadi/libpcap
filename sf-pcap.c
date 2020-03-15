@@ -66,6 +66,7 @@ static const char rcsid[] _U_ =
 #endif
 
 #include "sf-pcap.h"
+#include <pthread.h> 
 
 /*
  * Setting O_BINARY on DOS/Windows is a bit tricky
@@ -471,14 +472,54 @@ sf_write_header(FILE *fp, int linktype, int thiszone, int snaplen)
 	return (0);
 }
 
+static int bruce_dump_inited = 0; 
+volatile int64_t bruce_read_bytes, bruce_write_bytes;
+char  bruce_dump_buffer[512*1024*1014];
+char* bruce_dump_buffer_end = bruce_dump_buffer + sizeof(bruce_dump_buffer);
+static pthread_t bruce_dump_thread;
+
+static void* bruce_dump_proc(void* p){
+	FILE *fp = (FILE*)p;
+        char* read_ptr = bruce_dump_buffer;
+        for(;;){
+           while(bruce_read_bytes == bruce_write_bytes);
+           int64_t len = bruce_write_bytes - bruce_read_bytes;
+	   if(len > 0){
+		   if(read_ptr + len <= bruce_dump_buffer_end){
+			   int64_t written = 0;
+			   while(written < len)  written += fwrite(read_ptr + written , 1, len - written, fp); 
+			   read_ptr += len;
+		   }
+		   else {
+			   int64_t n1 = bruce_dump_buffer_end - read_ptr;
+			   int64_t n2 = len - n1;
+			   int64_t written = 0;
+			   while(written < n1)  written += fwrite(read_ptr + written , 1, n1 - written, fp); 
+			   read_ptr  = bruce_dump_buffer;
+			   while(written < n2)  written += fwrite(read_ptr + written , 1, n2 - written, fp); 
+			   read_ptr += n2; 
+		   }
+		   bruce_read_bytes += len;
+	   }
+        }
+	return NULL;
+} 
+
 /*
  * Output a packet to the initialized dump file.
  */
 void
 pcap_dump(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 {
+
+	if(!bruce_dump_inited){
+          pthread_create(&bruce_dump_thread,NULL, bruce_dump_proc, user);
+          bruce_dump_inited = 1;
+        }
+
 	register FILE *f;
 	struct pcap_sf_pkthdr sf_hdr;
+ 	int i;
 
 	f = (FILE *)user;
 	sf_hdr.ts.tv_sec  = h->ts.tv_sec;
@@ -486,8 +527,30 @@ pcap_dump(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 	sf_hdr.caplen     = h->caplen;
 	sf_hdr.len        = h->len;
 	/* XXX we should check the return status */
-	(void)fwrite(&sf_hdr, sizeof(sf_hdr), 1, f);
-	(void)fwrite(sp, h->caplen, 1, f);
+        int this_len = sizeof(sf_hdr) + h->caplen;
+
+        const int buffer_size = sizeof(bruce_dump_buffer); 
+        while(bruce_write_bytes - bruce_read_bytes + this_len >buffer_size); 
+        int off = bruce_write_bytes % buffer_size;
+        char* p = bruce_dump_buffer + off;
+        if(p + off < bruce_dump_buffer_end){
+           memcpy(p,&sf_hdr, sizeof(sf_hdr));
+           memcpy(p+ sizeof(sf_hdr) ,sp, h->caplen);
+        }
+        else {
+          char const* src =(char const*) &sf_hdr;
+
+          for(i = 0; i< sizeof(sf_hdr); ++i){
+              if(p == bruce_dump_buffer_end) p = bruce_dump_buffer;
+              *p++ = src[i]; 
+          }
+          src = (char const*) sp;
+	  for(i = 0; i< h->caplen; ++i){
+		  if(p == bruce_dump_buffer_end) p = bruce_dump_buffer;
+		  *p++ = src[i]; 
+	  }
+	}
+        bruce_write_bytes += this_len;
 }
 
 static pcap_dumper_t *
